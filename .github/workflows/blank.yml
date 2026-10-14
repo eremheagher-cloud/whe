@@ -198,23 +198,38 @@ jobs:
           echo "3. Open your RDP client."
           echo "4. Connect using the IP displayed above."
 
-      - name: Verify Services
+      - name: Keep Session Alive
         shell: bash
         run: |
-          echo "=== SERVICE STATUS ==="
+          set -uo pipefail
 
-          if systemctl is-active --quiet xrdp; then
-            echo "xrdp: active"
-          else
-            echo "xrdp: inactive"
-          fi
+          echo "=== SESSION MONITOR ==="
+          echo "Checking services every 60 seconds."
 
-          if systemctl is-active --quiet tailscaled; then
-            echo "Tailscale daemon: active"
-          else
-            echo "Tailscale daemon: inactive"
-          fi
+          counter=0
 
-          echo "=== WORKFLOW FINISHED ==="
-          echo "GitHub-hosted runners are temporary."
+          while true; do
+            counter=$((counter + 1))
+            echo "Heartbeat #$counter - $(date -Is)"
+
+            if ! systemctl is-active --quiet tailscaled; then
+              echo "Tailscale daemon is inactive; restarting..."
+              sudo systemctl restart tailscaled || true
+            else
+              echo "Tailscale daemon: ACTIVE"
+            fi
+
+            if ! systemctl is-active --quiet xrdp; then
+              echo "xrdp is inactive; restarting..."
+              sudo systemctl restart xrdp || true
+            else
+              echo "xrdp: ACTIVE"
+            fi
+
+            if ! sudo tailscale status; then
+              echo "Could not read Tailscale status."
+            fi
+
+            sleep 60
+          done
           
