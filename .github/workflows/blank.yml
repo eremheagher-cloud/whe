@@ -1,0 +1,220 @@
+
+name: PC criado pelo @alves7.pcm
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: 'Instance Number (1-10)'
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-rdp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: System Information
+        shell: bash
+        env:
+          INSTANCE_NUMBER: ${{ inputs.instance_number }}
+        run: |
+          set -euo pipefail
+
+          echo "=== ENIGMANO LINUX DEPLOYMENT ==="
+          echo "Instance: $INSTANCE_NUMBER"
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "Workflow: ${GITHUB_WORKFLOW:-unknown}"
+
+          cat /etc/os-release
+          uname -a
+          lscpu
+          free -h
+          df -h /
+
+      - name: Install Desktop and Utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xrdp \
+            dbus-x11 \
+            curl \
+            ca-certificates \
+            gnupg \
+            unzip \
+            openssl \
+            p7zip-full
+
+          echo "Desktop and utilities installed."
+
+      - name: Configure Desktop Session
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+          echo "XFCE and xrdp configured."
+
+      - name: Create Remote User
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! id runneradmin >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash runneradmin
+          fi
+
+          RDP_PASSWORD="$(openssl rand -base64 24)"
+
+          printf '%s:%s\n' runneradmin "$RDP_PASSWORD" |
+            sudo chpasswd
+
+          echo "======================================"
+          echo "       REMOTE DESKTOP ACCESS"
+          echo "======================================"
+          echo "Username: runneradmin"
+          echo "Password: $RDP_PASSWORD"
+          echo "======================================"
+
+          echo "RDP_PASSWORD=$RDP_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Install Tailscale
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg |
+            sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg \
+            >/dev/null
+
+          curl -fsSL \
+            https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list |
+            sudo tee /etc/apt/sources.list.d/tailscale.list \
+            >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y tailscale
+
+          echo "Tailscale installed."
+
+      - name: Start Tailscale
+        shell: bash
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAILSCALE_AUTH_KEY:-}" ]; then
+            echo "ERROR: GitHub secret TAILSCALE_AUTH_KEY is missing."
+            exit 1
+          fi
+
+          sudo systemctl enable --now tailscaled
+
+          sudo tailscale up \
+            --auth-key="$TAILSCALE_AUTH_KEY" \
+            --hostname="enigmano-${GITHUB_RUN_ID}"
+
+          echo "Tailscale connected."
+
+      - name: Get Tailscale IP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TS_IP="$(sudo tailscale ip -4 | head -n 1)"
+
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: Could not obtain Tailscale IP."
+            exit 1
+          fi
+
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+          echo "Tailscale IP: $TS_IP"
+
+      - name: Install Google Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            https://dl.google.com/linux/linux_signing_key.pub |
+            sudo gpg --dearmor --yes \
+              -o /usr/share/keyrings/google-chrome.gpg
+
+          echo \
+            "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" |
+            sudo tee /etc/apt/sources.list.d/google-chrome.list \
+            >/dev/null
+
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+          google-chrome --version
+
+      - name: Verify 7-Zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if command -v 7zz >/dev/null 2>&1; then
+            7zz | head -n 3 || true
+          elif command -v 7z >/dev/null 2>&1; then
+            7z | head -n 3 || true
+          else
+            echo "7-Zip executable not found."
+            exit 1
+          fi
+
+      - name: Connection Details
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== ENIGMANO REMOTE ACCESS ==="
+          echo "Host: $TAILSCALE_IP"
+          echo "Username: runneradmin"
+          echo "Password: $RDP_PASSWORD"
+          echo "RDP port: 3389"
+          echo
+          echo "1. Install Tailscale on your device."
+          echo "2. Join the same authorized Tailscale network."
+          echo "3. Open your RDP client."
+          echo "4. Connect using the IP displayed above."
+
+      - name: Verify Services
+        shell: bash
+        run: |
+          echo "=== SERVICE STATUS ==="
+
+          if systemctl is-active --quiet xrdp; then
+            echo "xrdp: active"
+          else
+            echo "xrdp: inactive"
+          fi
+
+          if systemctl is-active --quiet tailscaled; then
+            echo "Tailscale daemon: active"
+          else
+            echo "Tailscale daemon: inactive"
+          fi
+
+          echo "=== WORKFLOW FINISHED ==="
+          echo "GitHub-hosted runners are temporary."
+          
